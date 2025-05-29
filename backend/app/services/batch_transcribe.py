@@ -1,10 +1,21 @@
+import warnings
+import numpy as np
+
+# Suppress NumPy warnings at the top of the file
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="numpy")
+np.seterr(invalid='ignore', over='ignore', under='ignore')
+
 from faster_whisper import WhisperModel
 import os
-from pydub import AudioSegment
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import json
+
+# Use librosa instead of pydub to avoid the buffer issue
+import librosa
+import soundfile as sf
+
 
 def extract_audio_from_video(video_path:str, output_path: str) -> str:
     os.makedirs(output_path, exist_ok=True)
@@ -16,41 +27,53 @@ def extract_audio_from_video(video_path:str, output_path: str) -> str:
         "-acodec", "pcm_s16le",# audio codec (wav)
         "-ar", "44100",        # sample rate
         "-ac", "2",            # stereo audio
+        "-y",                  # overwrite output files
         audio_output
     ]
     subprocess.run(cmd, check=True)
     return audio_output
 
 def chunk_audio(audio_path, chunk_length_ms=30000, overlap_ms=1000):
-    audio = AudioSegment.from_wav(audio_path)
+    audio, sr = librosa.load(audio_path, sr=44100)
+    
+    # Convert ms to samples
+    chunk_samples = int(chunk_length_ms * sr / 1000)
+    overlap_samples = int(overlap_ms * sr / 1000)
+    
     chunks = []
     start = 0
     while start < len(audio):
-        end = min(start + chunk_length_ms, len(audio))
+        end = min(start + chunk_samples, len(audio))
         chunk = audio[start:end]
-        chunks.append(chunk)
-        start += chunk_length_ms - overlap_ms
+        
+        # Save chunk to temporary file
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            sf.write(f.name, chunk, sr)
+            chunks.append(f.name)
+        
+        start += chunk_samples - overlap_samples
+    
     return chunks
 
 model_size = "large-v3"
 model = WhisperModel(model_size, device="cuda", compute_type="float16")
 
-def transcribe_chunk(chunk, index, offset):
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        chunk.export(f.name, format="wav")
-        segments, _ = model.transcribe(f.name, beam_size=5)
+def transcribe_chunk(chunk_file, index, offset):
+    segments, _ = model.transcribe(chunk_file, beam_size=5)
 
-        # Adjust each segment’s start/end by the `offset`
-        adjusted = []
-        for seg in segments:
-            adjusted.append({
-                "start": seg.start + offset,
-                "end":   seg.end   + offset,
-                "text":  seg.text
-            })
+    # Adjust each segment's start/end by the `offset`
+    adjusted = []
+    for seg in segments:
+        adjusted.append({
+            "start": seg.start + offset,
+            "end":   seg.end   + offset,
+            "text":  seg.text
+        })
 
-        return {"index": index, "segments": adjusted}
+    # Clean up temporary file
+    os.unlink(chunk_file)
     
+    return {"index": index, "segments": adjusted}
 
 def process_video(video_path, output_dir):
     audio_path = extract_audio_from_video(video_path, output_dir)

@@ -8,7 +8,6 @@ encodec
 langid
 wget
 unidecode
-pyopenjtalk-prebuilt !
 pypinyin
 inflect
 cn2an

@@ -1,10 +1,21 @@
 from fastapi import FastAPI
 import uvicorn
+import warnings
+import numpy as np
 from app.utils.logger import setup_logger,logger
 # launcher.py at project root (LUNA/)
 import sys
 import os
 import torch
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+import json
+from fastapi.middleware.cors import CORSMiddleware
+
+# Suppress NumPy warnings about floating-point precision
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="numpy")
+np.seterr(invalid='ignore', over='ignore', under='ignore')
+
 # torch.cuda.empty_cache()       # Releases unreferenced memory back to CUDA
 # torch.cuda.ipc_collect()
 print(torch.version.cuda) 
@@ -20,5 +31,47 @@ logger.info("Starting backend")
 
 app = FastAPI()
 
+# Add CORS middleware to allow frontend requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify exact origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Mount static files for video assets
+app.mount("/assets", StaticFiles(directory="assests"), name="assets")
+
+@app.get("/")
+async def root():
+    return {"message": "LUNA Backend API"}
+
+@app.get("/video")
+async def get_video():
+    """Serve the demo video file"""
+    video_path = os.path.join(os.path.dirname(__file__), "../assests/video/demo1.mp4")
+    return FileResponse(video_path, media_type="video/mp4")
+
+@app.get("/transcription/{filename}")
+async def get_transcription(filename: str):
+    """Get transcription data"""
+    transcription_path = os.path.join(os.path.dirname(__file__), f"../assests/transcription/{filename}")
+    
+    if not os.path.exists(transcription_path):
+        return {"error": "Transcription file not found"}
+    
+    with open(transcription_path, "r") as f:
+        transcription_data = json.load(f)
+    
+    return {"transcription": transcription_data}
+
+@app.get("/transcriptions")
+async def list_transcriptions():
+    """List available transcription files"""
+    transcription_dir = os.path.join(os.path.dirname(__file__), "../assests/transcription")
+    files = [f for f in os.listdir(transcription_dir) if f.endswith('.json')]
+    return {"files": files}
+
 if __name__ == "__main__":
-    uvicorn.run(app)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
