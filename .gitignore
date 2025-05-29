@@ -17,7 +17,6 @@ dist-ssr
 *.local
 dist-react
 dist-electron
-/backend/vall_e_x
 /backend/whisper
 /backend/checkpoints
 /backend/assests/audio
