@@ -1,0 +1,34 @@
+.env
+/backend/venv
+node_modules
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+/desktop_app/node_modules
+dist
+dist-ssr
+*.local
+dist-react
+dist-electron
+/backend/vall_e_x
+/backend/whisper
+/backend/checkpoints
+/backend/assests/audio
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
