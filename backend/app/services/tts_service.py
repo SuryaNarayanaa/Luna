@@ -4,7 +4,7 @@ import sys
 import numpy as np
 import soundfile as sf
 import tempfile
-from pydub import AudioSegment
+import librosa
 import json
 import time
 
@@ -51,64 +51,114 @@ def apply_diffs_with_vallex(original_wav_path: str, diffs: list) -> str:
     logging.info(f"🔁 Starting apply_diffs_with_vallex on {original_wav_path}")
     start_total = time.time()
 
-    orig = AudioSegment.from_wav(original_wav_path)
-    out = AudioSegment.empty()
-    cursor_ms = 0
+    # Load original audio with librosa
+    orig_audio, orig_sr = librosa.load(original_wav_path, sr=None)
+    out_audio = np.array([])
+    cursor_samples = 0
 
-    prompt_duration_ms = 7000
-    prompt = orig[:prompt_duration_ms]
-    prompt_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    prompt.export(prompt_file.name, format="wav")
-    prompt_path = prompt_file.name
-    logging.info(f"---Speaker prompt extracted (0-{prompt_duration_ms}ms) → {prompt_path}")
-
+    prompt_duration_samples = int(7.0 * orig_sr)  # 7 seconds in samples
+    prompt_audio = orig_audio[:prompt_duration_samples]
     
-    prompt_segments, _ = model.transcribe(prompt_path, beam_size=5)
+    # Save prompt audio
+    prompt_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    sf.write(prompt_file.name, prompt_audio, orig_sr)
+    prompt_audio_path = prompt_file.name
+    prompt_file.close()  # Close the file before using it
+    logging.info(f"---Speaker prompt extracted (0-7s) → {prompt_audio_path}")
+
+    prompt_segments, _ = model.transcribe(prompt_audio_path, beam_size=5)
     prompt_text = " ".join(seg.text.strip() for seg in prompt_segments)
     logging.info(f"Prompt transcript: \"{prompt_text[:60]}…\"")
 
+    # Generate a unique prompt name without extension
+    import uuid
+    prompt_name = f"prompt_{uuid.uuid4().hex[:8]}"
+    
+    # Create customs directory relative to the vall_e_x directory
+    vall_e_x_dir = os.path.join(project_root, "backend", "vall_e_x")
+    customs_dir = os.path.join(vall_e_x_dir, "customs")
+    os.makedirs(customs_dir, exist_ok=True)
+    
     try:
-        make_prompt(name=prompt_path, audio_prompt_path=prompt_path,transcript=prompt_text)
+        # Change to vall_e_x directory before creating prompt
+        original_cwd = os.getcwd()
+        os.chdir(vall_e_x_dir)
+        
+        make_prompt(name=prompt_name, audio_prompt_path=prompt_audio_path, transcript=prompt_text)
+        prompt_for_generation = prompt_name
+        logging.info(f"Created prompt: {prompt_name}")
+        
+        # Change back to original directory
+        os.chdir(original_cwd)
     except Exception as e:
         logging.error(f"Prompt creation failed: {e}")
+        if 'original_cwd' in locals():
+            os.chdir(original_cwd)
         raise
 
     for i, diff in enumerate(diffs, 1):
         logging.info(f"--- Processing diff {i}/{len(diffs)} ---")
-        start_ms = int(diff["start"] * 1000)
-        end_ms = int(diff["end"] * 1000)
-        out += orig[cursor_ms:start_ms]
+        start_samples = int(diff["start"] * orig_sr)
+        end_samples = int(diff["end"] * orig_sr)
+        
+        # Add audio from cursor to start of diff
+        out_audio = np.concatenate([out_audio, orig_audio[cursor_samples:start_samples]])
 
         if diff["type"] == "remove":
-            logging.info(f"---Removing audio from {start_ms}ms to {end_ms}ms---")
+            logging.info(f"---Removing audio from {diff['start']:.2f}s to {diff['end']:.2f}s---")
         elif diff["type"] in ("replace", "insert"):
             text = diff["new_text"]
-            duration = (end_ms - start_ms) / 1000.0
+            duration = diff["end"] - diff["start"]
             logging.info(f"---Diff Type: {diff['type']} | Text: \"{text}\" | Duration: {duration:.2f}s---")
             
             try:
-                audio_np = synthesize_segment(text, duration, prompt_path)
-                tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-                sf.write(tmp.name, audio_np, SAMPLE_RATE, subtype="PCM_16")
-                segment = AudioSegment.from_wav(tmp.name)
-                os.unlink(tmp.name)
-
-                segment = segment.set_frame_rate(orig.frame_rate).set_channels(orig.channels)
-                out += segment
+                # Change to vall_e_x directory for generation
+                original_cwd = os.getcwd()
+                os.chdir(vall_e_x_dir)
+                
+                audio_np = synthesize_segment(text, duration, prompt_for_generation)
+                
+                # Change back to original directory
+                os.chdir(original_cwd)
+                
+                # Resample if necessary to match original sample rate
+                if SAMPLE_RATE != orig_sr:
+                    audio_np = librosa.resample(audio_np, orig_sr=SAMPLE_RATE, target_sr=orig_sr)
+                
+                out_audio = np.concatenate([out_audio, audio_np])
                 logging.info(f"🎙️ Inserted synthesized segment into output")
-            except Exception:
-                logging.error(f"⚠️ Skipping diff due to synthesis failure")
+            except Exception as e:
+                if 'original_cwd' in locals():
+                    os.chdir(original_cwd)
+                logging.error(f"⚠️ Skipping diff due to synthesis failure: {e}")
         else:
             logging.warning(f"⚠️ Unknown diff type: {diff['type']}")
 
-        cursor_ms = end_ms
+        cursor_samples = end_samples
 
-    out += orig[cursor_ms:]
+    # Add remaining audio
+    out_audio = np.concatenate([out_audio, orig_audio[cursor_samples:]])
+    
+    # Save output
     output_path = "./assests/audio/changed_audio.wav"
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    out.export(output_path, format="wav")
+    sf.write(output_path, out_audio, orig_sr)
 
-    os.unlink(prompt_path)
+    # Clean up temporary files - add small delay and error handling
+    try:
+        time.sleep(0.1)  # Small delay to ensure file is released
+        os.unlink(prompt_audio_path)
+    except PermissionError:
+        logging.warning(f"Could not delete temporary audio file: {prompt_audio_path}")
+    
+    # Clean up the generated prompt file
+    try:
+        prompt_npz_path = os.path.join(customs_dir, f"{prompt_name}.npz")
+        if os.path.exists(prompt_npz_path):
+            os.unlink(prompt_npz_path)
+    except Exception as e:
+        logging.warning(f"Could not clean up prompt file: {e}")
+
     total_time = time.time() - start_total
     logging.info(f"--Done! Final audio saved to {output_path} in {total_time:.2f}s--")
 

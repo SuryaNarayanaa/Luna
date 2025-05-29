@@ -3,7 +3,8 @@ import torch
 import torchaudio
 import logging
 import langid
-import whisper
+from faster_whisper import WhisperModel
+import tempfile
 langid.set_languages(['en', 'zh', 'ja'])
 
 import numpy as np
@@ -26,40 +27,37 @@ if torch.backends.mps.is_available():
     device = torch.device("mps")
 codec = AudioTokenizer(device)
 
-if not os.path.exists("./whisper/"): os.mkdir("./whisper/")
+# Initialize faster-whisper model
 whisper_model = None
 
 @torch.no_grad()
 def transcribe_one(model, audio_path):
-    # load audio and pad/trim it to fit 30 seconds
-    audio = whisper.load_audio(audio_path)
-    audio = whisper.pad_or_trim(audio)
+    # Use faster-whisper transcription
+    segments, info = model.transcribe(audio_path, beam_size=5)
+    
+    # Get detected language
+    detected_language = info.language
+    print(f"Detected language: {detected_language}")
+    
+    # Extract text from segments
+    text_segments = []
+    for segment in segments:
+        text_segments.append(segment.text)
+    
+    result_text = " ".join(text_segments).strip()
+    print(result_text)
 
-    # make log-Mel spectrogram and move to the same device as the model
-    mel = whisper.log_mel_spectrogram(audio).to(model.device)
-
-    # detect the spoken language
-    _, probs = model.detect_language(mel)
-    print(f"Detected language: {max(probs, key=probs.get)}")
-    lang = max(probs, key=probs.get)
-    # decode the audio
-    options = whisper.DecodingOptions(temperature=1.0, best_of=5, fp16=False if device == torch.device("cpu") else True, sample_len=150)
-    result = whisper.decode(model, mel, options)
-
-    # print the recognized text
-    print(result.text)
-
-    text_pr = result.text
-    if text_pr.strip(" ")[-1] not in "?!.,。，？！。、":
+    text_pr = result_text
+    if text_pr.strip(" ") and text_pr.strip(" ")[-1] not in "?!.,。，？！。、":
         text_pr += "."
-    return lang, text_pr
+    return detected_language, text_pr
 
 def make_prompt(name, audio_prompt_path, transcript=None):
-    global model, text_collater, text_tokenizer, codec
+    global text_collater, text_tokenizer, codec
     wav_pr, sr = torchaudio.load(audio_prompt_path)
     # check length
     if wav_pr.size(-1) / sr > 15:
-        raise ValueError(f"Prompt too long, expect length below 15 seconds, got {wav_pr / sr} seconds.")
+        raise ValueError(f"Prompt too long, expect length below 15 seconds, got {wav_pr.size(-1) / sr} seconds.")
     if wav_pr.size(0) == 2:
         wav_pr = wav_pr.mean(0, keepdim=True)
     text_pr, lang_pr = make_transcript(name, wav_pr, sr, transcript)
@@ -78,14 +76,17 @@ def make_prompt(name, audio_prompt_path, transcript=None):
 
     message = f"Detected language: {lang_pr}\n Detected text {text_pr}\n"
 
-    # save as npz file
-    save_path = os.path.join("./customs/", f"{name}.npz")
+    # save as npz file - use simple relative path
+    customs_dir = "./customs/"
+    os.makedirs(customs_dir, exist_ok=True)
+    save_path = os.path.join(customs_dir, f"{name}.npz")
     np.savez(save_path, audio_tokens=audio_tokens, text_tokens=text_tokens, lang_code=lang2code[lang_pr])
     logging.info(f"Successful. Prompt saved to {save_path}")
+    
+    return save_path
 
 
 def make_transcript(name, wav, sr, transcript=None):
-
     if not isinstance(wav, torch.FloatTensor):
         wav = torch.tensor(wav)
     if wav.abs().max() > 1:
@@ -95,18 +96,25 @@ def make_transcript(name, wav, sr, transcript=None):
     if wav.ndim == 1:
         wav = wav.unsqueeze(0)
     assert wav.ndim and wav.size(0) == 1
+    
     if transcript is None or transcript == "":
-        logging.info("Transcript not given, using Whisper...")
+        logging.info("Transcript not given, using faster-whisper...")
         global whisper_model
         if whisper_model is None:
-            whisper_model = whisper.load_model("medium", download_root=os.path.join(os.getcwd(), "whisper"))
-        whisper_model.to(device)
-        torchaudio.save(f"./prompts/{name}.wav", wav, sr)
-        lang, text = transcribe_one(whisper_model, f"./prompts/{name}.wav")
+            # Initialize faster-whisper model
+            model_size = "medium"
+            compute_type = "float16" if torch.cuda.is_available() else "float32"
+            whisper_model = WhisperModel(model_size, device="cuda" if torch.cuda.is_available() else "cpu", compute_type=compute_type)
+        
+        # Create temporary file for faster-whisper
+        os.makedirs("./prompts/", exist_ok=True)
+        temp_audio_path = f"./prompts/{name}.wav"
+        torchaudio.save(temp_audio_path, wav, sr)
+        
+        lang, text = transcribe_one(whisper_model, temp_audio_path)
         lang_token = lang2token[lang]
         text = lang_token + text + lang_token
-        os.remove(f"./prompts/{name}.wav")
-        whisper_model.cpu()
+        os.remove(temp_audio_path)
     else:
         text = transcript
         lang, _ = langid.classify(text)
