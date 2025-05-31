@@ -3,7 +3,6 @@ import uvicorn
 import warnings
 import numpy as np
 from app.utils.logger import setup_logger,logger
-# launcher.py at project root (LUNA/)
 import sys
 import os
 import torch
@@ -12,18 +11,14 @@ from fastapi.staticfiles import StaticFiles
 import json
 from fastapi.middleware.cors import CORSMiddleware
 
-# Suppress NumPy warnings about floating-point precision
-warnings.filterwarnings("ignore", category=RuntimeWarning, module="numpy")
-np.seterr(invalid='ignore', over='ignore', under='ignore')
-
-# torch.cuda.empty_cache()       # Releases unreferenced memory back to CUDA
+# torch.cuda.empty_cache()     
 # torch.cuda.ipc_collect()
 print(torch.version.cuda) 
 print(torch.backends.cudnn.version()) 
 print(torch.backends.cudnn.is_available())     
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "backend"))
-from app.services import tts_service
+from app.services import batch_transcribe
 
 
 setup_logger()

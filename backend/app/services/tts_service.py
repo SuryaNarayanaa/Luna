@@ -24,7 +24,7 @@ from faster_whisper import WhisperModel
 preload_models()
 setup_logger()
 model_size = "large-v3"
-model = WhisperModel(model_size, device="cuda", compute_type="float16")
+model = WhisperModel(model_size, device="cuda", compute_type="int8")
 
 def synthesize_segment(text: str, target_duration: float, prompt_path: str) -> np.ndarray:
     logging.info(f"Synthesizing segment | Text: \"{text}\" | Target Duration: {target_duration:.2f}s")
@@ -47,48 +47,88 @@ def synthesize_segment(text: str, target_duration: float, prompt_path: str) -> n
 
     return audio
 
+def get_voice_segment(audio_wav_path,audio, sr, min_duration=5.0, max_duration=10.0, model=model):   
+    try:
+        segments, info = model.transcribe(
+            audio_wav_path,
+            beam_size=5,
+            vad_filter=True,  # Enable VAD filtering
+            vad_parameters=dict(
+                min_silence_duration_ms=500,  # Minimum silence between segments
+                speech_pad_ms=400,  # Padding around speech
+            )
+        )
+        
+        segments = list(segments)
+        scored_segments = []
+        
+        for i, seg in enumerate(segments):
+            duration = seg.end - seg.start
+            if min_duration <= duration <= max_duration and info.language == 'en':
+                ends_with_punct = seg.text.strip()[-1] in '.!?'
+                word_count = len(seg.text.split())
+                # Improved scoring with language confidence
+                score = (ends_with_punct * 2 + word_count * 0.1) * info.language_probability
+                if info.language_probability > 0.95:  # Only consider high-confidence English segments
+                    scored_segments.append((score, i, seg))
+        
+        if not scored_segments:
+            raise ValueError("No valid English segments found in the duration range")
+        
+        # Get best segment
+        scored_segments.sort(reverse=True)
+        best_score, best_idx, best_segment = scored_segments[0]
+        
+        # Extract audio for the best segment
+        start_samples = int(best_segment.start * sr)
+        end_samples = int(best_segment.end * sr)
+        voice_segment = audio[start_samples:end_samples]
+        
+        logging.info(f"Selected best segment: {best_segment.text[:60]}...")
+        logging.info(f"Duration: {best_segment.end - best_segment.start:.2f}s, Score: {best_score:.2f}")
+        
+        return voice_segment, best_segment.start, best_segment.end, best_segment.text
+
+    except Exception as e:
+        logging.error(f"Error in voice segment detection: {e}")
+        raise
+
 def apply_diffs_with_vallex(original_wav_path: str, diffs: list) -> str:
     logging.info(f"🔁 Starting apply_diffs_with_vallex on {original_wav_path}")
     start_total = time.time()
 
-    # Load original audio with librosa
+    logging.info(f"Loading original audio from {original_wav_path}")
+
     orig_audio, orig_sr = librosa.load(original_wav_path, sr=None)
     out_audio = np.array([])
     cursor_samples = 0
 
-    prompt_duration_samples = int(7.0 * orig_sr)  # 7 seconds in samples
-    prompt_audio = orig_audio[:prompt_duration_samples]
+    logging.info(f"Loaded original audio with {len(orig_audio)} samples at {orig_sr} Hz")
+
+    voice_segment, start_time, end_time, prompt_text = get_voice_segment(original_wav_path,orig_audio, orig_sr)
+    logging.info(f"Found voice segment between {start_time:.2f}s and {end_time:.2f}s")
     
-    # Save prompt audio
     prompt_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    sf.write(prompt_file.name, prompt_audio, orig_sr)
+    sf.write(prompt_file.name, voice_segment, orig_sr)
     prompt_audio_path = prompt_file.name
-    prompt_file.close()  # Close the file before using it
-    logging.info(f"---Speaker prompt extracted (0-7s) → {prompt_audio_path}")
+    prompt_file.close()
 
-    prompt_segments, _ = model.transcribe(prompt_audio_path, beam_size=5)
-    prompt_text = " ".join(seg.text.strip() for seg in prompt_segments)
+    logging.info(f"Speaker prompt extracted ({end_time-start_time:.1f}s) → {prompt_audio_path}")
     logging.info(f"Prompt transcript: \"{prompt_text[:60]}…\"")
-
-    # Generate a unique prompt name without extension
-    import uuid
-    prompt_name = f"prompt_{uuid.uuid4().hex[:8]}"
+    prompt_name = "prompt_speaker"
     
-    # Create customs directory relative to the vall_e_x directory
     vall_e_x_dir = os.path.join(project_root, "backend", "vall_e_x")
     customs_dir = os.path.join(vall_e_x_dir, "customs")
     os.makedirs(customs_dir, exist_ok=True)
     
     try:
-        # Change to vall_e_x directory before creating prompt
         original_cwd = os.getcwd()
         os.chdir(vall_e_x_dir)
         
         make_prompt(name=prompt_name, audio_prompt_path=prompt_audio_path, transcript=prompt_text)
         prompt_for_generation = prompt_name
-        logging.info(f"Created prompt: {prompt_name}")
+        logging.info(f"Created prompt from voice segment at {start_time:.2f}s - {end_time:.2f}s")
         
-        # Change back to original directory
         os.chdir(original_cwd)
     except Exception as e:
         logging.error(f"Prompt creation failed: {e}")
