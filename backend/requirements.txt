@@ -6,3 +6,4 @@ sounddevice
 soundfile
 pydub
 numpy
+coqui-tts

@@ -86,6 +86,7 @@ class AudioChunker:
             logger.error(f"Failed to load audio {audio_path}: {e}")
             raise
     
+    #TODO : Chunks are stored in temp files, use in memory structure to increase performance
     def create_chunks(self, audio_path: Union[str, Path]) -> List[str]:
         audio_path = str(audio_path)
         audio, sr = self.load_audio(audio_path)
@@ -190,7 +191,6 @@ class WhisperTranscriber:
                     "no_speech_prob": getattr(seg, 'no_speech_prob', 0.0)
                 })
             
-            # Clean up chunk file
             try:
                 os.unlink(chunk_file)
             except Exception as e:
@@ -385,7 +385,7 @@ class BatchTranscriber:
             # Extract audio if input is video
             if input_path.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.webm']:
                 logger.info("Detected video file, extracting audio...")
-                audio_path = self.extractor.extract_audio(input_path, output_dir / "temp")
+                audio_path = self.extractor.extract_audio(input_path, output_dir)
             else:
                 audio_path = str(input_path)
             
@@ -470,7 +470,7 @@ class BatchTranscriber:
 
 
 video_file = Path(__file__).parent.parent.parent / "assests" / "video" / "demo1.mp4"
-output_dir = Path(__file__).parent.parent.parent / "transcripts"
+output_dir = Path(__file__).parent.parent.parent / "assests" / "transcription"
 
 
 transcriber = BatchTranscriber(
@@ -487,15 +487,15 @@ try:
     result = transcriber.transcribe_file(video_file, output_dir)
     
     if result["success"]:
-        print(f"✅ {video_file.name}: {result['statistics']['total_segments']} segments")
-        print(f"   Processing time: {result['statistics']['processing_time']:.2f}s")
-        print(f"   Speed factor: {result['statistics']['speed_factor']:.2f}x real-time")
-        print(f"   Files saved:")
+        print(f"{video_file.name}: {result['statistics']['total_segments']} segments")
+        print(f"Processing time: {result['statistics']['processing_time']:.2f}s")
+        print(f"Speed factor: {result['statistics']['speed_factor']:.2f}x real-time")
+        print(f"Files saved:")
         for file_type, file_path in result['saved_files'].items():
             print(f"     - {file_type}: {file_path}")
     else:
-        print(f"❌ {video_file.name}: {result['error']}")
+        print(f"{video_file.name}: {result['error']}")
         
 except Exception as e:
     logger.error(f"Failed to process {video_file}: {e}")
-    print(f"❌ Failed to process {video_file}: {e}")
+    print(f"Failed to process {video_file}: {e}")

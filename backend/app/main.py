@@ -18,7 +18,7 @@ print(torch.backends.cudnn.version())
 print(torch.backends.cudnn.is_available())     
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "backend"))
-from app.services import batch_transcribe
+from app.services import tts_service
 
 
 setup_logger()
