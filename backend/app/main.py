@@ -11,8 +11,7 @@ from fastapi.staticfiles import StaticFiles
 import json
 from fastapi.middleware.cors import CORSMiddleware
 
-# torch.cuda.empty_cache()     
-# torch.cuda.ipc_collect()
+
 print(torch.version.cuda) 
 print(torch.backends.cudnn.version()) 
 print(torch.backends.cudnn.is_available())     

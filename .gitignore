@@ -1,7 +1,7 @@
 .env
 /backend/venv
 node_modules
-
+/backend/env
 # Logs
 logs
 *.log
@@ -20,7 +20,7 @@ dist-electron
 /backend/whisper
 /backend/checkpoints
 /backend/assests/audio
-
+backend/assests/audio/xtts_modified_audio.wav
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
